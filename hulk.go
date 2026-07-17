@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const __version__ = "2.0.0-raw"
+const __version__ = "0.0.2"
 
 const acceptCharset = "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
 

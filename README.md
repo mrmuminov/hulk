@@ -29,3 +29,7 @@ DoS testing tool. Sends massive HTTP load to a target server using raw TCP conne
 docker build -t hulk -f docker/Dockerfile .
 docker run -it hulk -site http://target.com
 ```
+
+---
+
+Inspired by [grafov/hulk](https://github.com/grafov/hulk) (Go port) and [Barry Shteiman's original HULK](http://www.sectorix.com/2012/05/17/hulk-web-server-dos-tool/) (Python).
