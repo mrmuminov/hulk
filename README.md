@@ -1,12 +1,14 @@
 # HULK - HTTP Unbearable Load King
 
-DoS testing tool. Sends massive HTTP load to a target server using raw TCP connections.
+A DoS testing tool that generates massive HTTP load against a target server using raw TCP connections. Rewritten for maximum throughput — see benchmark below.
 
 ## Usage
 
 ```
 ./hulk -site http://target.com
 ```
+
+Press `Ctrl+C` to stop.
 
 ## Options
 
@@ -30,6 +32,29 @@ docker build -t hulk -f docker/Dockerfile .
 docker run -it hulk -site http://target.com
 ```
 
+## Benchmark vs grafov/hulk
+
+| Target | This version (raw TCP) | grafov/hulk (net/http) | Speedup |
+|--------|----------------------|----------------------|---------|
+| Localhost (HTTP) | ~189,000 req/s | ~13,100 req/s | **14x** |
+| Localhost (slow server) | ~8,850 req/s | ~200 req/s | **44x** |
+| Remote site (HTTP/HTTPS) | ~4,800-7,500 req/s | ~1,200 req/s | **4-6x** |
+| Remote site (HTTPS only) | ~280-420 req/s | 0 (fails to connect) | — |
+
+### Why is it faster?
+
+The old version (`net/http`) for every request:
+1. Creates a new `http.Client` (TLS handshake overhead)
+2. Reads the response body then calls `.Body.Close()`
+3. All goroutines report results through a single `chan` — **bottleneck**
+
+This version (raw TCP):
+1. Each goroutine opens **one TCP connection** and sends requests over keep-alive — TLS handshake only once
+2. Does not read the response body — **zero-copy**
+3. Pre-spawned goroutines, `sync/atomic` counters — **no channels, no bottleneck**
+4. Each goroutine has its own PRNG (`rand.New(rand.NewSource(...))`) — **no mutex contention**
+5. Direct `net.Dialer` + `net.TCPConn.Write()` — no pooling, no wrapping, no interface overhead
+
 ---
 
-Inspired by [grafov/hulk](https://github.com/grafov/hulk) (Go port) and [Barry Shteiman's original HULK](http://www.sectorix.com/2012/05/17/hulk-web-server-dos-tool/) (Python).
+Based on [grafov/hulk](https://github.com/grafov/hulk) (Go port) and [Barry Shteiman's original HULK](http://www.sectorix.com/2012/05/17/hulk-web-server-dos-tool/) (Python).

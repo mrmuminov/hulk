@@ -26,3 +26,6 @@ _testmain.go
 
 # Binary
 /hulk
+hulk-*
+hulk-old*
+hulk.py
