@@ -12,30 +12,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            ext: ""
-          - os: ubuntu-latest
-            goos: linux
-            goarch: arm64
-            ext: ""
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            ext: ".exe"
-          - os: macos-latest
-            goos: darwin
-            goarch: amd64
-            ext: ""
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            ext: ""
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -45,17 +22,28 @@ jobs:
           go-version: "1.26"
 
       - name: Test
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: CGO_ENABLED=0 go test -v -cover -count=1 .
 
-      - name: Build
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -trimpath -o hulk${{ matrix.ext }} .
+      - name: Build linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o hulk-linux-amd64 .
 
-      - name: Upload artifact
+      - name: Build linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o hulk-linux-arm64 .
+
+      - name: Build windows/amd64
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o hulk-windows-amd64.exe .
+
+      - name: Build darwin/amd64
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o hulk-darwin-amd64 .
+
+      - name: Build darwin/arm64
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o hulk-darwin-arm64 .
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hulk-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: hulk${{ matrix.ext }}
+          name: hulk-binaries
+          path: hulk-*
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -64,19 +52,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
+        with:
+          name: hulk-binaries
 
       - name: Checksum
-        run: sha256sum hulk-*/* > checksums.txt
+        run: sha256sum hulk-* > checksums.txt
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            hulk-linux-amd64/hulk
-            hulk-linux-arm64/hulk
-            hulk-windows-amd64/hulk.exe
-            hulk-darwin-amd64/hulk
-            hulk-darwin-arm64/hulk
+            hulk-linux-amd64
+            hulk-linux-arm64
+            hulk-windows-amd64.exe
+            hulk-darwin-amd64
+            hulk-darwin-arm64
             checksums.txt
