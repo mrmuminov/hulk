@@ -24,6 +24,9 @@ _testmain.go
 # IDE Folder
 .idea/
 
+# Generated
+coverage.out
+
 # Binary
 /hulk
 hulk-*
